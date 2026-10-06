@@ -1,0 +1,7 @@
+{
+  "PROJECT_ROOT": "/data2/lsy/projects/Edit-Latent-CoT/causal-latent-cot",
+  "DATA_DIR": "/data2/lsy/projects/Edit-Latent-CoT/data",
+  "MODEL_DIR": "/data2/lsy/projects/Edit-Latent-CoT/models",
+  "OUTPUT_DIR": "/data2/lsy/projects/Edit-Latent-CoT/outputs",
+  "device": "cuda"
+}

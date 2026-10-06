@@ -1,0 +1,51 @@
+# Python, environments and caches
+__pycache__/
+*.py[cod]
+.env
+.env.*
+.envrc
+.venv/
+env/
+venv/
+.cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Data and model artifacts (keep preprocessing scripts)
+/data/**/*.json
+/data/**/*.jsonl
+/data/**/*.parquet
+/data/datasets/
+/datasets/
+/models/
+/checkpoints/
+/external/
+*.pt
+*.pth
+*.safetensors
+*.bin
+checkpoint_*
+
+# Experiment outputs and derived reports
+/outputs/
+/results/
+/analysis/
+*.log
+/Rplots.pdf
+/r-script/conda-r/
+
+# Machine-specific configuration
+/configs/first_round/server.json
+/configs/first_round/*.local.json
+
+# Local editors and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp

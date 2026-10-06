@@ -1,0 +1,39 @@
+name: First-round checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-first-round.txt
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install torch==2.2.2 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements-first-round.txt
+      - name: Get pinned Coconut dependency
+        run: |
+          git clone https://github.com/facebookresearch/coconut.git external/coconut
+          git -C external/coconut checkout 27273cb8cca4bb763c041a63b036d0c3b7cbbb48
+      - name: Run data, tiny-model and pipeline checks
+        run: |
+          python -m unittest experiments.first_round.test_data experiments.first_round.test_tiny_model experiments.first_round.test_pipeline -v

@@ -1,0 +1,5 @@
+# Install a CUDA-compatible PyTorch separately in the server environment.
+# The pinned official Coconut implementation uses legacy tuple KV caches.
+transformers==4.44.2
+huggingface_hub>=0.24.0,<1.0
+numpy==1.26.4

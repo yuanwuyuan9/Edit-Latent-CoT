@@ -1,0 +1,17 @@
+{
+  "dataset": "prosqa",
+  "split": "test",
+  "dataset_path": "${DATA_DIR}/prosqa/test.json",
+  "checkpoint_path": "${MODEL_DIR}/prosqa-coconut/checkpoint_40",
+  "base_model_path": "${MODEL_DIR}/gpt2",
+  "prompt_template": "{question}\n",
+  "num_latent_steps": 6,
+  "max_new_tokens": 64,
+  "seed": 0,
+  "max_samples": 5,
+  "atol": 0.00001,
+  "rtol": 0.00001,
+  "random_strengths": [0.1, 0.5, 1.0],
+  "noise_seeds": [0, 1, 2],
+  "save_trace_samples": 2
+}
