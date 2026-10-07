@@ -1,6 +1,6 @@
 """Gold-guided, norm-bounded feasibility of changing one feedback input.
 
-Full-context differentiable feedback matches the cached inference path. Model
+Differentiable feedback uses the same cached calls as the inference path. Model
 weights and prefix input vectors are frozen. Only teacher forcing sees gold;
 the selected input is evaluated by the unchanged free-generation interface.
 """
@@ -40,33 +40,68 @@ def validate_protocol(protocol, steps):
         raise ValueError('Invalid optimization protocol')
 
 
-def teacher_forward(model, state, modified, target_ids):
-    """Recompute future feedback differentiably; gold is appended after the prompt."""
+def differentiable_prompt(model, state, modified):
+    """Match cached rollout calls, retaining the graph across future feedback."""
     import torch
     embeds = state['inputs_embeds'].detach().clone()
     positions = state['latent_lists'][0]
     slot = state['pass_idx']
-    if modified.shape != (1, embeds.shape[-1]) or target_ids.ndim != 2 or target_ids.shape[0] != 1 or not target_ids.numel():
-        raise ValueError('Expected batch-one modified latent and nonempty target IDs')
-    embeds = model._inject_latents(embeds, [(0, positions[slot])], [modified[0]])
-    for next_slot in range(slot + 1, len(positions)):
-        end = positions[next_slot]
-        output = model.base_model(inputs_embeds=embeds[:, :end],
-            attention_mask=state['attention_mask'][:, :end], position_ids=state['position_ids'][:, :end],
-            output_hidden_states=True, use_cache=False)
-        # The input to the next latent is the preceding token's final hidden state.
-        embeds = model._inject_latents(embeds, [(0, end)], [output.hidden_states[-1][0, -1]])
-    prompt_length = embeds.shape[1]
-    teacher_embeds = model.coconut_model.embedding(target_ids[:, :-1])
-    all_embeds = torch.cat((embeds, teacher_embeds), dim=1)
-    if all_embeds.shape[1] > model.base_model.config.n_positions:
+    if modified.shape != (1, embeds.shape[-1]) or not 0 <= slot < len(positions):
+        raise ValueError('Expected one valid batch-one latent input')
+    embeds = model._inject_latents(embeds, [(0, positions[slot])], [modified[0].to(embeds)])
+    cache = model._ensure_cache([(k.detach(), v.detach()) for k, v in
+                                model._kv_cache_to_legacy_pairs(state['past_key_values'])])
+    compute_range = state['next_compute_range']
+    def forward_slice(start, end, past):
+        sliced = model._ensure_cache([(k[:, :, :start, :], v[:, :, :start, :])
+                                     for k, v in model._kv_cache_to_legacy_pairs(past)]) if past is not None else None
+        return model.base_model(inputs_embeds=embeds[:, start:end],
+            attention_mask=state['attention_mask'][:, :end], position_ids=state['position_ids'][:, start:end],
+            past_key_values=sliced, output_hidden_states=True, use_cache=True)
+    for idx in range(slot, len(positions)):
+        start, end = compute_range
+        output = forward_slice(start, end, cache)
+        cache = output.past_key_values
+        compute_range = (end, embeds.shape[1] if idx + 1 >= len(positions) else end + 1)
+        if idx + 1 < len(positions):
+            # Unlike _gather_latent_values, this retains the feedback derivative.
+            hidden = output.hidden_states[-1][0, positions[idx + 1] - 1 - start]
+            embeds = model._inject_latents(embeds, [(0, positions[idx + 1])], [hidden])
+    if compute_range[1] > compute_range[0]:
+        output = forward_slice(*compute_range, cache)
+        cache = output.past_key_values
+    return {'inputs_embeds': embeds, 'first_logit': output.logits[:, -1, :],
+            'past_key_values': cache, 'past_key_values_latents': cache}
+
+
+def teacher_forward(model, state, modified, target_ids):
+    """Gold is read only after completing the naturally computed latent prompt."""
+    import torch
+    if target_ids.ndim != 2 or target_ids.shape[0] != 1 or not target_ids.numel():
+        raise ValueError('Expected nonempty batch-one target IDs')
+    if state['inputs_embeds'].shape[1] + target_ids.shape[1] - 1 > model.base_model.config.n_positions:
         raise ValueError('Teacher-forcing context budget exceeded')
-    logits = model.base_model(inputs_embeds=all_embeds, use_cache=False,
-        attention_mask=torch.ones(all_embeds.shape[:2], device=all_embeds.device, dtype=torch.long),
-        position_ids=torch.arange(all_embeds.shape[1], device=all_embeds.device).unsqueeze(0)).logits
-    logits = logits[:, prompt_length - 1:prompt_length - 1 + target_ids.shape[1]]
+    prompt = differentiable_prompt(model, state, modified)
+    logits = model.compute_logits(modified, prompt, target_ids, allow_grad=torch.is_grad_enabled())
     loss = torch.nn.functional.cross_entropy(logits.reshape(-1, logits.shape[-1]), target_ids.reshape(-1))
-    return loss, logits, embeds
+    return loss, logits, prompt['inputs_embeds']
+
+
+def comparison_details(actual, expected, cfg):
+    """Strict original tolerances, with enough detail to diagnose a rejection."""
+    import torch
+    details = {'actual_shape': list(actual.shape), 'expected_shape': list(expected.shape),
+               'finite': bool(torch.isfinite(actual).all() and torch.isfinite(expected).all()),
+               'atol': cfg['atol'], 'rtol': cfg['rtol'], 'close': False}
+    if actual.shape != expected.shape or not details['finite']:
+        return details
+    error = (actual - expected).abs()
+    tolerance = cfg['atol'] + cfg['rtol'] * expected.abs()
+    details.update(close=bool(torch.allclose(actual, expected, atol=cfg['atol'], rtol=cfg['rtol'])),
+                   max_abs_error=float(error.max()), failed_elements=int((error > tolerance).sum()))
+    if actual.ndim == 3:
+        details['max_abs_error_per_position'] = error.amax(dim=(0, 2)).tolist()
+    return details
 
 
 def projected_search(model, state, h, target_ids, radius, seed, protocol):
@@ -203,6 +238,7 @@ def main():
     manifest = {**prov, 'run_id': args.run_id, 'stage': 'oracle_latent_optimization', 'status': 'running',
                 'expected_records': expected, 'record_count': 0, 'family_run_id': parent['run_id'], 'command': sys.argv,
                 'started_utc': datetime.now(timezone.utc).isoformat(),
+                'teacher_forward_implementation': 'Cached rollout with differentiable future feedback; original comparison tolerances.',
                 'interpretation': 'Gold-guided norm-bounded reachability at one latent input; free generation determines success. Not automatic or semantic repair. Random controls compare geometry, not equal computational search budgets.'}
     write_json(folder / 'manifest.json', manifest)
     records, error = [], None
@@ -235,17 +271,29 @@ def main():
                 target_text = protocol['target_template'].format(answer=sample['gold_answer'])
                 target_ids = torch.tensor([model.tokenizer(target_text, add_special_tokens=False)['input_ids'] + [model.eos_token_id]], device=model.device)
                 write_json(folder / 'optimization' / f"{sample['index']:03d}_target.json", {'text': target_text, 'token_ids': target_ids[0].tolist(), 'eos_appended': True})
-                def check_teacher(inserted, output):
+                def check_teacher(inserted, output, **condition):
                     with torch.no_grad():
                         loss, logits, embeds = teacher_forward(model, state, inserted, target_ids)
                         cached_logits = model.compute_logits(inserted, output, target_ids, allow_grad=False)
-                    if (not torch.isfinite(loss) or not torch.allclose(embeds[:, positions], output['inputs_embeds'][:, positions], atol=cfg['atol'], rtol=cfg['rtol'])
-                            or not torch.allclose(logits, cached_logits, atol=cfg['atol'], rtol=cfg['rtol'])):
-                        raise ValueError('Differentiable feedback/teacher logits differ from cached inference')
+                    feedback_check = comparison_details(embeds[:, positions], output['inputs_embeds'][:, positions], cfg)
+                    logits_check = comparison_details(logits, cached_logits, cfg)
+                    if not torch.isfinite(loss) or not feedback_check['close'] or not logits_check['close']:
+                        diagnostic = {'sample_id': sample['sample_id'], 'chicken_count': sample['chicken_count'],
+                                      'condition': condition, 'feedback_check': feedback_check, 'logits_check': logits_check,
+                                      'teacher_nll': float(loss) if torch.isfinite(loss) else None,
+                                      'target_ids': target_ids[0].tolist()}
+                        write_json(folder / 'logs/teacher_mismatch.json', diagnostic)
+                        torch.save({'modified_latent': inserted.detach().cpu(), 'teacher_latents': embeds[:, positions].cpu(),
+                                    'cached_latents': output['inputs_embeds'][:, positions].detach().cpu(),
+                                    'teacher_logits': logits.cpu(), 'cached_teacher_logits': cached_logits.cpu(),
+                                    'target_ids': target_ids.cpu()}, folder / 'logs/teacher_mismatch.pt')
+                        raise ValueError('Teacher/cache mismatch: ' + json.dumps(diagnostic, allow_nan=False))
                     token_nll = torch.nn.functional.cross_entropy(logits.reshape(-1, logits.shape[-1]),
                         target_ids.reshape(-1), reduction='none').tolist()
-                    return {'teacher_nll': float(loss), 'teacher_token_nll': token_nll}
-                original_metrics = check_teacher(h, identity)
+                    return {'teacher_nll': float(loss), 'teacher_token_nll': token_nll,
+                            'feedback_max_abs_error': feedback_check['max_abs_error'],
+                            'teacher_logits_max_abs_error': logits_check['max_abs_error']}
+                original_metrics = check_teacher(h, identity, operation='identity')
                 original_nll = original_metrics['teacher_nll']
                 baseline_score = score(baseline['continuation'][0], sample, 'gsm8k')
                 def emit(op, output, inserted, radius=0.0, restart=None, control_seed=None, **fields):
@@ -275,7 +323,7 @@ def main():
                     output = model.rollout_from_step(inserted, state)
                     if output['generated_token_ids'][0] != fixed_rows[sample['sample_id']]['generated_token_ids']:
                         raise ValueError('Frozen comparison differs from previous run')
-                    emit('frozen_delta', output, inserted, **check_teacher(inserted, output))
+                    emit('frozen_delta', output, inserted, **check_teacher(inserted, output, operation='frozen_delta'))
                 for radius in protocol['relative_radii']:
                     for seed in protocol['restart_seeds']:
                         delta, log = projected_search(model, state, h, target_ids, radius, seed, protocol)
@@ -288,7 +336,8 @@ def main():
                         for op, control_seed, inserted in branches:
                             with torch.no_grad():
                                 output = model.rollout_from_step(inserted, state)
-                                metrics = check_teacher(inserted, output)
+                                metrics = check_teacher(inserted, output, operation=op, radius=radius,
+                                                        restart_seed=seed, control_noise_seed=control_seed)
                                 nll = metrics['teacher_nll']
                             if op == 'optimized' and abs(nll - log['best_teacher_nll']) > 1e-4:
                                 raise ValueError('Selected optimization iterate did not reproduce its loss')

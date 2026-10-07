@@ -17,9 +17,28 @@ from experiments.first_round.run import digest, provenance, stable_hash, write_j
 from experiments.first_round.test_tiny_model import tiny_model
 from run_counterfactual_family import delta_hash
 from run_same_question_donors import runtime_info
-from run_oracle_latent_optimization import projected_search, teacher_forward, validate_protocol
+from run_oracle_latent_optimization import comparison_details, projected_search, teacher_forward, validate_protocol
 
 ROOT = Path(__file__).resolve().parent
+
+
+def full_context_reference(model, state, modified, target_ids):
+    """Independent CPU reference for values and complete feedback derivatives."""
+    embeds = state['inputs_embeds'].detach().clone()
+    positions = state['latent_lists'][0]
+    slot = state['pass_idx']
+    embeds = model._inject_latents(embeds, [(0, positions[slot])], [modified[0]])
+    for next_slot in range(slot + 1, len(positions)):
+        end = positions[next_slot]
+        output = model.base_model(inputs_embeds=embeds[:, :end],
+            attention_mask=state['attention_mask'][:, :end], position_ids=state['position_ids'][:, :end],
+            use_cache=False, output_hidden_states=True)
+        embeds = model._inject_latents(embeds, [(0, end)], [output.hidden_states[-1][0, -1]])
+    length = embeds.shape[1]
+    all_embeds = torch.cat((embeds, model.coconut_model.embedding(target_ids[:, :-1])), dim=1)
+    logits = model.base_model(inputs_embeds=all_embeds, use_cache=False).logits[:, length - 1:length - 1 + target_ids.shape[1]]
+    loss = torch.nn.functional.cross_entropy(logits.reshape(-1, logits.shape[-1]), target_ids.reshape(-1))
+    return loss, logits, embeds
 
 
 class OracleOptimizationTests(unittest.TestCase):
@@ -30,11 +49,12 @@ class OracleOptimizationTests(unittest.TestCase):
         for step in (1, 2, 3):
             h, state = model.forward_until_step('Hi\n', step)
             for changed in (h, h * 0.5):
-                _, logits, embeds = teacher_forward(model, state, changed, ids)
-                output = model.rollout_from_step(changed, state)
-                cached = model.compute_logits(changed, output, ids)
-                torch.testing.assert_close(logits, cached)
-                torch.testing.assert_close(embeds, output['inputs_embeds'])
+                with torch.no_grad():
+                    _, logits, embeds = teacher_forward(model, state, changed, ids)
+                    output = model.rollout_from_step(changed, state)
+                    cached = model.compute_logits(changed, output, ids)
+                    self.assertTrue(torch.equal(logits, cached))
+                    self.assertTrue(torch.equal(embeds, output['inputs_embeds']))
         _, _, first = teacher_forward(model, state, h, ids)
         _, _, second = teacher_forward(model, state, h, torch.tensor([[9, 2, 36]]))
         torch.testing.assert_close(first, second)
@@ -50,6 +70,11 @@ class OracleOptimizationTests(unittest.TestCase):
         feedback_gradient, = torch.autograd.grad(future.square().sum(), x, retain_graph=True)
         self.assertGreater(float(feedback_gradient.norm()), 0)
         gradient, = torch.autograd.grad(loss, x)
+        reference_x = h.clone().requires_grad_(True)
+        reference_loss, reference_logits, reference_embeds = full_context_reference(model, state, reference_x, ids)
+        reference_gradient, = torch.autograd.grad(reference_loss, reference_x)
+        torch.testing.assert_close(gradient, reference_gradient)
+        torch.testing.assert_close(embeds, reference_embeds)
         direction = gradient / gradient.norm()
         epsilon = 0.01
         with torch.no_grad():
@@ -65,6 +90,7 @@ class OracleOptimizationTests(unittest.TestCase):
         model.base_model.requires_grad_(False)
         h, state = model.forward_until_step('Hi\n', 2)
         before = state['inputs_embeds'].clone()
+        cache_before = [(k.clone(), v.clone()) for k, v in model._kv_cache_to_legacy_pairs(state['past_key_values'])]
         weights = {name: p.detach().clone() for name, p in model.base_model.named_parameters()}
         protocol = {'updates': 20, 'step_fraction_of_radius': 0.05, 'initial_fraction_of_radius': 0.1}
         for seed in (0, 1):
@@ -74,6 +100,8 @@ class OracleOptimizationTests(unittest.TestCase):
             self.assertEqual(len(log['history']), 21)
             self.assertTrue(all(r['relative_norm'] <= 0.500001 for r in log['history']))
         self.assertTrue(torch.equal(before, state['inputs_embeds']))
+        for (k, v), (old_k, old_v) in zip(model._kv_cache_to_legacy_pairs(state['past_key_values']), cache_before):
+            self.assertTrue(torch.equal(k, old_k) and torch.equal(v, old_v))
         for name, p in model.base_model.named_parameters():
             self.assertTrue(torch.equal(p, weights[name]))
             self.assertIsNone(p.grad)
@@ -82,6 +110,17 @@ class OracleOptimizationTests(unittest.TestCase):
         for update in ({'updates': 0}, {'relative_radii': [0]}, {'restart_seeds': [1]}, {'append_eos': False}):
             with self.assertRaises(ValueError):
                 validate_protocol({**full, **update}, 6)
+
+    def test_mismatch_diagnostics_keep_original_tolerances(self):
+        cfg = {'atol': 1e-5, 'rtol': 1e-5}
+        actual, expected = torch.zeros(1, 2, 3), torch.zeros(1, 2, 3)
+        actual[0, 1, 2] = 1e-4
+        details = comparison_details(actual, expected, cfg)
+        self.assertFalse(details['close'])
+        self.assertEqual(details['failed_elements'], 1)
+        self.assertAlmostEqual(details['max_abs_error'], 1e-4)
+        self.assertEqual(details['max_abs_error_per_position'][0], 0)
+        self.assertFalse(comparison_details(actual * float('nan'), expected, cfg)['finite'])
 
     def test_cli_complete_search_and_free_generation_separate_from_teacher_loss(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -164,6 +203,8 @@ class OracleOptimizationTests(unittest.TestCase):
             self.assertTrue(manifest['weights_unchanged'])
             records = [json.loads(line) for line in (output / 'predictions.jsonl').read_text().splitlines()]
             for row in records:
+                self.assertEqual(row['feedback_max_abs_error'], 0)
+                self.assertEqual(row['teacher_logits_max_abs_error'], 0)
                 self.assertAlmostEqual(sum(row['teacher_token_nll']) / len(row['teacher_token_nll']), row['teacher_nll'], places=5)
                 if row['operation'] == 'optimized':
                     log = json.loads((output / row['optimization_log']).read_text())
