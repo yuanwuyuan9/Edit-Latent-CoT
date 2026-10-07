@@ -1,0 +1,12 @@
+{
+  "parent_signature": "ac61264b2dd6b80552cca71addb3e2fce67dac4d8a6a77c36108767cb3816085",
+  "frozen_delta_sha256": "bae4d96c8f55ae7f2f41b7108437d4a567eae567d8bf8740ec543a17d5a9b291",
+  "target_step": 5,
+  "restart_seed": 0,
+  "updates": 80,
+  "step_fraction_of_radius": 0.05,
+  "initial_fraction_of_radius": 0.1,
+  "target_template": "### {answer}",
+  "append_eos": true,
+  "budget": "Absolute norm of the saved gold-source delta; radius = fixed_delta.norm() / original_h.norm()."
+}

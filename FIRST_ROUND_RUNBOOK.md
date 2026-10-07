@@ -288,3 +288,30 @@ python run_frozen_consequences.py \
 `pilot01` 已完成并通过离线核验。校准题三个来源编辑全部复现，四个新变体的正向冻结编辑条件适配为 0/12、真实正确为 0/12；9/12 次仍生成 baseline token，1/12 次重复来源答案。全部正向分支均改变 h6，但没有展示预期的条件计算。结果及等绝对范数的本题可达性诊断建议见 [冻结编辑分析](docs/FROZEN_CONSEQUENCES_PILOT01.md)。
 
 若两个错误目标也在相近半径和预算下普遍可达，当前优化成功不足以证明推理修复；若 gold 更容易达到，也只支持当前题族和目标集合下的相对可达性。此对照本身不定位原错误，不识别中间语义因素。CPU `python -m unittest test_target_answer_controls -v` 检查完整导出、旧 gold 搜索复现、协议继承、目标/真实正确性分离、缓存一致性及离线重评分。
+
+## 16. 下午变体：同绝对范数预算的本题 oracle
+
+冻结 gold 编辑在四个新变体上全部失败。本轮只检查这些变体在相同 h5 编辑预算下，是否能通过各自的 gold-guided 搜索找到有效输入。默认协议固定上一轮签名与 gold delta 的 SHA256；不扩大问题集合、位置或范数预算。
+
+```bash
+git pull --ff-only
+python run_afternoon_oracle.py \
+  --config configs/first_round/gsm8k.json \
+  --machine-config configs/first_round/server.json \
+  --frozen-run /data2/lsy/projects/Edit-Latent-CoT/outputs/gsm8k_frozen_consequences_pilot01 \
+  --run-id gsm8k_afternoon_oracle_pilot01
+```
+
+直接读取上一轮完整的五题数据。下午 25 的原题只作校准；下午 17、21、29、33 各优化一次。每题保存 baseline、identity、原 gold delta 回放；四个新题再各保存一个本题优化候选，共 **19 条自由生成记录、4 次优化**。不新增反向、随机或错误目标搜索。
+
+绝对范数上限直接取保存的 gold delta 在当前模型 dtype/device 上的范数，约 `5.92482`，不会将该数值手动四舍五入写入优化预算。逐题设 `radius = ||fixed_delta|| / ||original_h5||`，复用原 `projected_search`，修改仍为 `h5 + ||h5|| * u`。因此优化允许的绝对幅度与冻结编辑一致，候选实际位移可以小于上限；不按各新题 h5 范数重新缩放冻结向量。
+
+每次搜索固定零初始化（种子 0）、80 次更新、归一化梯度步长为约束半径的 5%、每步投影；目标为 `### {gold}` 加 EOS 的平均 token NLL。保存 81 个损失评估，以最低 NLL 选择迭代，不按生成正确性筛选。对应四题的相对半径约为 0.22909、0.23549、0.23450、0.19622，实际值随每题输出记录。
+
+先严格复现上一轮所有 baseline 与固定 gold 编辑的生成 token、完整 latent 输入（原阈值）。各分支验证插入值、原始前缀、自然反馈与共享缓存不变；梯度路径与缓存路径继续比较反馈和 teacher logits。baseline 生成接口不返回 teacher 缓存，其 NLL 沿用旧实验方法，由已验证的 identity 回放计算。检查不通过会停止并保存诊断，最终再核对权重值及梯度不变。
+
+`traces/` 额外保存本题 `original_h`，便于区分插入位移与独立参考前向的数值误差。`optimization/` 保存逐题目标、token IDs、绝对上限、相对半径及完整搜索历史；`summary.json` 按题配对 baseline、冻结编辑与本题 oracle 的答案、正确性、NLL 和范数。新题主指标排除校准题。成功由原接口的不提供答案的自由生成判断，gold 仅用于优化和评分。
+
+若本题优化成功而冻结方向失败，说明同上限和当前搜索预算下能找到有效输入，支持固定方向在新上下文中的局限；仍不能识别被修复的语义因素。若搜索失败，只说明这一次零初始化、80 步搜索未找到成功，不能证明接口不可修复或推理错误发生在其他位置。
+
+回传完整 `outputs/gsm8k_afternoon_oracle_pilot01/`，包含 `optimization/`、`traces/` 和日志。本地 `python -m unittest test_afternoon_oracle -v` 使用真实微型 GPT-2 验证不同 h 范数下的同绝对预算、四次搜索与校准分离、旧输入回放、缓存和权重检查、输出评分及目录不覆盖；测试不代表真实 checkpoint 的修复效果。
