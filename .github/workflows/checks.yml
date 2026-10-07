@@ -36,4 +36,4 @@ jobs:
           git -C external/coconut checkout 27273cb8cca4bb763c041a63b036d0c3b7cbbb48
       - name: Run data, tiny-model and pipeline checks
         run: |
-          python -m unittest experiments.first_round.test_data experiments.first_round.test_tiny_model experiments.first_round.test_pipeline test_path_controls test_counterfactual_family test_same_question_donors test_oracle_latent_optimization -v
+          python -m unittest experiments.first_round.test_data experiments.first_round.test_tiny_model experiments.first_round.test_pipeline test_path_controls test_counterfactual_family test_same_question_donors test_oracle_latent_optimization test_target_answer_controls -v

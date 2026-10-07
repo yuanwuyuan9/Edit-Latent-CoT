@@ -228,3 +228,28 @@ python run_oracle_latent_optimization.py \
 若成功，仅说明在该位置和幅度内找到能使答案正确的输入，尚不能证明修复了语义因素或定位了错误起源。若失败，只说明当前目标、优化器和预算未找到修复，不能证明不存在可修复状态。本地 `python -m unittest test_oracle_latent_optimization -v` 验证有限差分梯度、后续反馈梯度、投影约束、缓存/权重保持，以及自由生成与 teacher forcing 的分离。
 
 `pilot02` 已完成并通过离线核验。7 个新变体在相对半径 0.25 下有 6 个找到正确生成，在 0.5 下全部找到；这支持答案可达性，尚不能区分推理修复和答案引导。结果与下一轮指定错误答案对照的设计见 [pilot02 分析](docs/ORACLE_LATENT_OPTIMIZATION_PILOT02.md)。
+
+## 14. 正确与指定错误答案的同预算优化
+
+直接优化使用了正确答案监督。下一轮固定两个错误目标，检查相同接口是否也能导向这些答案。每题优化真实答案 `y`、`y-4`、`y+4`；这两个错误目标在当前 8 题上均为正数，且不同于该题 baseline 答案，不按运行结果选择目标。
+
+```bash
+git pull --ff-only
+python run_target_answer_controls.py \
+  --config configs/first_round/gsm8k.json \
+  --machine-config configs/first_round/server.json \
+  --oracle-run /data2/lsy/projects/Edit-Latent-CoT/outputs/gsm8k_oracle_latent_optimization_pilot02 \
+  --run-id gsm8k_target_answer_controls_pilot01
+```
+
+直接继承 `pilot02/protocol.json`：位置为第 5 步，相对半径 0.1、0.25、0.5、1.0，初始化种子 0、1、2，各执行 80 次更新，以最低平均目标 token NLL 选择迭代。优化器和梯度入口复用上一轮代码，不修改原入口或恢复接口。每次搜索从本题原始输入和缓存开始，三个目标使用相同随机初始化方向、相同半径及更新规则，不使用另一目标优化后的向量初始化。
+
+本轮只评估优化候选，不重复反向与随机方向分支；主要比较三个目标的可达性，预算在三个目标间一致。8 题 × 3 目标 × 4 半径 × 3 初始化 = **288 次优化**，每次保存 81 个迭代损失。每题另存 baseline 和 identity，合计 **304 条自由生成记录**。
+
+重新运行的 96 个 gold 候选必须复现 `pilot02` 的生成 token IDs、完整 latent 输入（原数值阈值）及选定目标 NLL（误差最多 `1e-4`）；baseline 和 identity 也须复现。候选插入、前缀保持、缓存隔离、范数投影及 teacher/cache 一致性继续严格检查。最后校验权重值及梯度未变。任一异常停止并保存失败目录，原输出不被覆盖。
+
+每个目标保存实际文本、token IDs、长度及原始输入下的 NLL 到 `optimization/<index>_targets.json`。记录 `target_answer`、`target_offset`、`target_hit` 和 `correct`：`target_hit` 表示自由生成命中所指定的优化目标；`correct` 始终表示命中真实 gold。成功生成错误目标不算修复。`summary.json` 按题、目标和半径分别统计两种结果，并记录最小已测试成功半径；并非真实最小编辑范数。原题与 7 个相关变体分开解释。
+
+回传完整 `outputs/gsm8k_target_answer_controls_pilot01/`，包含全部 `optimization/` 和 `traces/`。若发生 teacher/cache 不匹配，诊断文件继续保存至 `logs/teacher_mismatch.json` 与 `.pt`。目标数值和分词长度可能影响可达难度；两个错误目标的结果不能代表所有错误答案。
+
+若两个错误目标也在相近半径和预算下普遍可达，当前优化成功不足以证明推理修复；若 gold 更容易达到，也只支持当前题族和目标集合下的相对可达性。此对照本身不定位原错误，不识别中间语义因素。CPU `python -m unittest test_target_answer_controls -v` 检查完整导出、旧 gold 搜索复现、协议继承、目标/真实正确性分离、缓存一致性及离线重评分。
