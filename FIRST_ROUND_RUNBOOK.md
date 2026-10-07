@@ -285,4 +285,6 @@ python run_frozen_consequences.py \
 
 回传完整 `outputs/gsm8k_frozen_consequences_pilot01/`，包括 `frozen_edits.pt`、`frozen_sources.json`、数据、协议、全部轨迹和代码快照。CPU `python -m unittest test_frozen_consequences -v` 检查唯一题目因素变化、固定绝对范数、自然反馈、来源校验、三种判据分离及完整导出/离线评分。端到端测试使用受控数值解码器和真实微型 GPT-2 反馈/缓存，用于流程检查，不代表真实 checkpoint 的效果。
 
+`pilot01` 已完成并通过离线核验。校准题三个来源编辑全部复现，四个新变体的正向冻结编辑条件适配为 0/12、真实正确为 0/12；9/12 次仍生成 baseline token，1/12 次重复来源答案。全部正向分支均改变 h6，但没有展示预期的条件计算。结果及等绝对范数的本题可达性诊断建议见 [冻结编辑分析](docs/FROZEN_CONSEQUENCES_PILOT01.md)。
+
 若两个错误目标也在相近半径和预算下普遍可达，当前优化成功不足以证明推理修复；若 gold 更容易达到，也只支持当前题族和目标集合下的相对可达性。此对照本身不定位原错误，不识别中间语义因素。CPU `python -m unittest test_target_answer_controls -v` 检查完整导出、旧 gold 搜索复现、协议继承、目标/真实正确性分离、缓存一致性及离线重评分。
