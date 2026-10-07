@@ -317,3 +317,26 @@ python run_afternoon_oracle.py \
 回传完整 `outputs/gsm8k_afternoon_oracle_pilot01/`，包含 `optimization/`、`traces/` 和日志。本地 `python -m unittest test_afternoon_oracle -v` 使用真实微型 GPT-2 验证不同 h 范数下的同绝对预算、四次搜索与校准分离、旧输入回放、缓存和权重检查、输出评分及目录不覆盖；测试不代表真实 checkpoint 的修复效果。
 
 `pilot01` 已完成并通过离线核验。四个新题在原绝对范数上限约 5.92482 下，本题 oracle 全部正确（4/4），冻结方向全部失败（0/4）；10 次旧输入回放的保存轨迹逐元素复现。结果支持该位置与预算下的逐题答案可达性，尚未识别语义修复。详细结果和已有五个方向的交叉迁移建议见 [本题 oracle 分析](docs/AFTERNOON_ORACLE_PILOT01.md)。
+
+## 17. 五个已有编辑的交叉迁移
+
+固定上一轮五个成功编辑：下午 25 的原 gold delta，以及下午 17、21、29、33 的本题 oracle delta。在同一五道题各自的原始 h5 上分别加每个固定 delta，自然重算 h6 与答案，不重新优化、缩放或调用 teacher forcing。默认协议固定父实验签名、五个来源轨迹及 delta 的 SHA256。
+
+```bash
+git pull --ff-only
+python run_cross_transfer.py \
+  --config configs/first_round/gsm8k.json \
+  --machine-config configs/first_round/server.json \
+  --oracle-run /data2/lsy/projects/Edit-Latent-CoT/outputs/gsm8k_afternoon_oracle_pilot01 \
+  --run-id gsm8k_cross_transfer_pilot01
+```
+
+每题保存 baseline、identity、五个来源编辑，共 **35 条记录**。每题先验证 baseline、identity 和本题来源的对角线回放，再评估其他来源。五个对角线、五个 baseline，以及来源 25 在四个新题上的旧结果，合计 14 个分支必须复现旧生成 token 和完整 latent 输入（原阈值）。失败立即停止，保存差异 JSON、张量及错误日志。
+
+所有分支保持接收题自己的原始前缀，验证单向量插入、共享缓存不变、末尾 identity 回放及模型参数值和梯度不变。固定来源位移与上一轮相同，范数约 5.92482，保留原 `1e-5` 范数检查余量，不根据接收题状态重归一化。
+
+`summary.json` 的矩阵**行为接收题、列为来源题**，顺序均为 `[25,17,21,29,33]`。逐格记录接收题真实正确性、是否重复来源答案、是否与接收题 baseline 的生成 token 完全相同。对角线上的正确与来源答案重复不能区分迁移；主比较为 20 个非对角线，其中来源 25 的 4 个组合已有结果，另单独报告 16 个新组合。
+
+`traces/` 保存接收题完整反馈输入、原始 h5 及实际位移；`sources/` 保留五个来源轨迹，`frozen_deltas.pt` 与 `sources.json` 保存实际固定向量及其来源哈希。不同题及同一来源的多次应用属于相关观测，成功只能说明这些候选的行为迁移，不能直接识别语义因素。
+
+按本轮要求未运行 pytest 或单元测试，仅进行语法检查和已有来源文件核对；真实模型运行检查由服务器执行。回传完整 `outputs/gsm8k_cross_transfer_pilot01/`。

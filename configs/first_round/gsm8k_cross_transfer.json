@@ -1,0 +1,20 @@
+{
+  "parent_signature": "ab2aab7b91cbf9586f6d60a2e8b2e76c7d851d00672063b08babd1e04465522c",
+  "target_step": 5,
+  "afternoon_cups": [25, 17, 21, 29, 33],
+  "source_trace_hashes": {
+    "25": "492cd8ad155c626133c1c8e2e4e6d7516e03b54a577c71c47a226913a1299e63",
+    "17": "56945c3a530b7324b22ffe2634bdd67815ea9753d533b8a6163b7b0000c528a2",
+    "21": "a7fbc0b6e946a52aba41fefa6524c7170d35571ecbb15a6f154e98f3f546f48e",
+    "29": "74f6aeda6b32d94f2d347196dc3e4d0e6cf899d59bab0ca492833de2a49195f3",
+    "33": "b744b56d6eba45a6c265b2e834618e37a1aee59c6a022bd0f392f161d1be1c83"
+  },
+  "source_delta_hashes": {
+    "25": "bae4d96c8f55ae7f2f41b7108437d4a567eae567d8bf8740ec543a17d5a9b291",
+    "17": "b1cd19ba7741ecbde9717cf1352a2fa740ae8ec98c9baf927c020321724d030f",
+    "21": "081e2efb3c785816c2981009999e8935ef21c6460328865ebd72c2daf3fbce60",
+    "29": "48f1d9dde8aaf726eb7548c1d13e2dc82c838255c7e34997633edbe8094a031c",
+    "33": "0f246d7b9f6edd45c08429ecbc79363ca7ac49e2ef6326426c108f36e2d70da3"
+  },
+  "interpretation": "Five frozen additive deltas on five original recipient prefixes; no optimization, rescaling, or teacher forcing."
+}
