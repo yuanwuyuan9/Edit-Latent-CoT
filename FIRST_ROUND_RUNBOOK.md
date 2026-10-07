@@ -152,3 +152,25 @@ python run_path_controls.py \
 移植前复现来源的自然轨迹；每个目标位置先检查 identity 能复现基线。之后只插入一个来源向量，使用原始前缀与缓存，重新计算全部后续反馈向量。记录来源步骤、目标步骤、来源正确性、实际移植幅度、答案及完整输出轨迹。检查原始前缀未变且目标位置恰好插入指定向量；异常立即停止。
 
 这是同题、oracle 来源的机制诊断。若成功，只支持该后续反馈向量在指定原始前缀下提供了足以改变答案的信息；其语义内容、迁移性和错误起源仍需其他证据。失败来源作为对照，不能仅比较成功来源的最佳结果。
+
+## 11. 固定编辑，改变问题条件
+
+单向量移植已在样本 4 的第 5 步得到一次成功。下一轮固定这一编辑，检查它能否随题目条件产生不同答案，而非重复输出原题答案 20。使用第 1 步、强度 1.0、种子 9 的来源轨迹，定义 `delta = donor_h5 - original_h5`；在每个新问题自己的第 5 步输入上加同一个 delta，保留原始前缀并自然重算后续反馈。
+
+```bash
+git pull --ff-only
+python run_counterfactual_family.py \
+  --config configs/first_round/gsm8k.json \
+  --machine-config configs/first_round/server.json \
+  --source-run /data2/lsy/projects/Edit-Latent-CoT/outputs/gsm8k_interventions_followup01 \
+  --transplant-run /data2/lsy/projects/Edit-Latent-CoT/outputs/gsm8k_latent_transplants_pilot01 \
+  --run-id gsm8k_counterfactual_family_pilot01
+```
+
+无需手动传输编辑向量或新数据。程序从服务器已有输出提取向量，核对配置中预先固定的来源轨迹及向量校验值，生成问题变体，并保存数据、编辑、协议及代码快照。来源数据、模型、环境和原恢复接口仍须与已有实验签名匹配；新实验单独计算包含变体数据和新代码的签名。
+
+原题 20 只鸡先用于复现检查，之后测试 16、18、22、24、26、28、30 只鸡；每题只替换鸡的数量，正确答案为 `3*n-15-25`，分别为 8、14、26、32、38、44、50。每题运行基线、identity、正向 delta、反向 delta，以及种子 100–109 的 10 个等绝对范数随机方向：8 × 14 = 112 条记录。所有方向与幅度在观察变体结果前固定；不按每个新问题的向量范数重新缩放。
+
+任一问题的 identity、前缀保持、向量插入或共享缓存检查失败即停止；原题正向编辑须复现既有移植答案。回传完整 `outputs/gsm8k_counterfactual_family_pilot01/`。`summary.json` 按条件分开汇总原题和 7 个新变体，报告修复、破坏及输出 20 的次数。比较正向编辑与反向、随机对照的全部答案，不把 112 条记录当作 112 道题。
+
+这是同一道题的合成受控变体，编辑由已知成功案例事后选定。即使结果随数量正确变化，也仅提供行为层面的迁移证据，不能单独证明语义因素分离或自动错误定位。真实模型效果须在服务器上运行；本地 `python -m unittest test_counterfactual_family -v` 使用微型模型检查完整流程、自然反馈及统计口径。

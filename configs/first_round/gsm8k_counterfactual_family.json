@@ -1,0 +1,14 @@
+{
+  "origin_sample_index": 4,
+  "calibration_count": 20,
+  "counts": [20, 16, 18, 22, 24, 26, 28, 30],
+  "source_step": 1,
+  "source_strength": 1.0,
+  "source_noise_seed": 9,
+  "target_step": 5,
+  "scale": 1.0,
+  "random_seeds": [100, 101, 102, 103, 104, 105, 106, 107, 108, 109],
+  "source_trace_sha256": "1c825278e948cbecc553a4e68d2828f5082e8dcee9a1f5f53b203ca314316019",
+  "transplant_trace_sha256": "7b4c307e413bcab08062805fa09b5adcbb3c8346939f0db76fb1feca56756d55",
+  "delta_values_sha256": "ca6c4392029cef6ba9de90d31c1ceae0c61b20cf653658ba16aaabe33895832e"
+}
