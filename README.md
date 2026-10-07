@@ -4,7 +4,7 @@
 
 研究 latent 推理中的自然错误：检查 latent 计算的作用，寻找候选问题位置，并探索局部修改后模型能否自行计算后果。
 
-当前实现第一轮实验平台：**基线评测 → 原样恢复验证 → 逐位置干预 → 离线分析**。首个模型为 GPT-2 + Coconut，数据集为 GSM8K 和 ProsQA。已完成 CPU 检查及 GSM8K 的 20 条基线、5 道题的干预 pilot；完整 benchmark 和 ProsQA 实验仍待验证。成功案例的反馈对照、单向量移植与固定编辑的受控问题变体入口见 [运行说明](FIRST_ROUND_RUNBOOK.md)。
+当前实现第一轮实验平台：**基线评测 → 原样恢复验证 → 逐位置干预 → 离线分析**。首个模型为 GPT-2 + Coconut，数据集为 GSM8K 和 ProsQA。已完成 CPU 检查及 GSM8K 的 20 条基线、5 道题的干预 pilot；完整 benchmark 和 ProsQA 实验仍待验证。成功案例的反馈对照、单向量移植、受控问题变体和同题 donor 搜索入口见 [运行说明](FIRST_ROUND_RUNBOOK.md)。
 
 本项目基于 [causal-latent-cot](https://github.com/J1mL1/causal-latent-cot) 开发，上游来源、许可证及修改记录见 [docs/UPSTREAM.md](docs/UPSTREAM.md)。
 

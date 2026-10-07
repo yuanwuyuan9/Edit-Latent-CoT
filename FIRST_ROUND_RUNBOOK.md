@@ -174,3 +174,28 @@ python run_counterfactual_family.py \
 任一问题的 identity、前缀保持、向量插入或共享缓存检查失败即停止；原题正向编辑须复现既有移植答案。回传完整 `outputs/gsm8k_counterfactual_family_pilot01/`。`summary.json` 按条件分开汇总原题和 7 个新变体，报告修复、破坏及输出 20 的次数。比较正向编辑与反向、随机对照的全部答案，不把 112 条记录当作 112 道题。
 
 这是同一道题的合成受控变体，编辑由已知成功案例事后选定。即使结果随数量正确变化，也仅提供行为层面的迁移证据，不能单独证明语义因素分离或自动错误定位。真实模型效果须在服务器上运行；本地 `python -m unittest test_counterfactual_family -v` 使用微型模型检查完整流程、自然反馈及统计口径。
+
+## 12. 每道题自身的第 5 步 donor 可修复性
+
+固定原题编辑在 7 个数量变体上均未修复。下一轮检查：每个变体是否存在由本题候选轨迹产生的第 5 步向量，能在该题原始前缀下修正答案？移植位置保持第 5 步，用于区分该位置的同题可修复性和原题固定方向的迁移能力。
+
+```bash
+git pull --ff-only
+python run_same_question_donors.py \
+  --config configs/first_round/gsm8k.json \
+  --machine-config configs/first_round/server.json \
+  --family-run /data2/lsy/projects/Edit-Latent-CoT/outputs/gsm8k_counterfactual_family_pilot01 \
+  --run-id gsm8k_same_question_donors_pilot01
+```
+
+程序读取上一轮已保存的问题、基线与固定方向结果。每题在第 1–3 步分别施加强度 0.5、0.75、1.0、种子 0–9 的随机干预，自然生成 90 条来源轨迹；使用与原题上一轮相同的有限搜索预算。不根据来源回答正确与否筛选候选，也不在成功后提前停止。
+
+对每条来源轨迹，取本题第 5 步 donor，并从本题原始前缀执行三种分支：插入 donor；施加反向位移；施加一个等位移范数的随机方向。随机对照种子预先固定为 `1000 + 候选序号`，每题各 90 次，与 donor 的搜索预算相同。三个分支都自主重算第 6 步与答案，不复制来源轨迹后缀，不将正确答案输入模型。
+
+每题记录基线 1 条、第 1–3 和第 5 步 identity 4 条、原题固定方向复现 1 条，以及 90 ×（来源 + donor + 反向 + 随机）360 条，共 366 条。8 题共 **2,928 条记录**。每个候选保存完整反馈输入及来源链接；检查 identity、原始前缀、单向量插入与共享缓存不变。原题已知成功的 donor 路径还须复现，异常即停止并保存失败目录。
+
+回传完整 `outputs/gsm8k_same_question_donors_pilot01/`。`summary.json` 逐题报告各分支全部尝试的正确率、修复/破坏计数，以及是否至少有一个 donor 成功；成功来源和失败来源均保留。比较 donor、反向和随机分支的相同搜索预算，不把候选数量作为独立题目数，原题与 7 个相关变体分开解释。
+
+若新变体中同题 donor 成功而原题固定方向失败，支持该题在第 5 步存在局部修复，同时显示共享固定方向的限制。若没有成功，只说明此次候选生成方式与预算未找到修复，不能否定其他状态、位置或编辑方式。成功仍属于使用 gold 判定后的 oracle 可行性证据，尚不能定位错误起源或识别具体语义因素。
+
+本地验证：`python -m unittest test_same_question_donors -v`，检查搜索预算、等范数对照、原始前缀与自然反馈、缓存隔离，以及包含失败来源的端到端导出和离线评分。
