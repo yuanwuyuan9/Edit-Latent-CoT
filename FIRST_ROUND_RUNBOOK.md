@@ -256,4 +256,6 @@ python run_target_answer_controls.py \
 
 初版失败目录保留；修订版使用新的 run-id `gsm8k_target_answer_controls_pilot02` 重跑。生成记录仍为 304 条，额外的 96 次固定输入回放只作一致性核验，不纳入目标命中统计。
 
+`pilot02` 已完成并通过离线核验。半径 0.5 下，gold、`y-4`、`y+4` 均命中 24/24 次；96 次固定旧向量回放完全复现。重新搜索的 48 次向量不匹配集中在半径 0.5 和 1.0，输出 token 全部保持一致。结果及固定编辑的后果计算对照设计见 [指定目标对照分析](docs/TARGET_ANSWER_CONTROLS_PILOT02.md)。
+
 若两个错误目标也在相近半径和预算下普遍可达，当前优化成功不足以证明推理修复；若 gold 更容易达到，也只支持当前题族和目标集合下的相对可达性。此对照本身不定位原错误，不识别中间语义因素。CPU `python -m unittest test_target_answer_controls -v` 检查完整导出、旧 gold 搜索复现、协议继承、目标/真实正确性分离、缓存一致性及离线重评分。
