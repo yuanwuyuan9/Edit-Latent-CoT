@@ -16,7 +16,7 @@ from experiments.first_round.data import load_samples, score
 from experiments.first_round.run import digest, provenance, stable_hash, write_json
 from run_oracle_latent_optimization import projected_search, teacher_forward
 from run_same_question_donors import runtime_info
-from run_target_answer_controls import target_cases, target_summary
+from run_target_answer_controls import compare_gold, compare_search_history, target_cases, target_summary
 
 ROOT = Path(__file__).resolve().parent
 
@@ -41,6 +41,26 @@ class TargetAnswerControlTests(unittest.TestCase):
         result = target_summary([base, wrong])[0]['targets'][1]
         self.assertEqual((result['target_hits'], result['gold_correct']), (1, 0))
         self.assertEqual(result['smallest_tested_success_radius'], 0.25)
+
+    def test_fixed_input_replay_and_independent_search_comparisons_are_distinct(self):
+        trace = torch.zeros(1, 3, 2)
+        positions = torch.tensor([0, 1, 2])
+        old = {'generated_token_ids': [7], 'teacher_nll': 0.01}
+        metrics = {'teacher_nll': 0.01}
+        replay = {'inputs_embeds': trace.clone(), 'generated_token_ids': [[7]]}
+        cfg = {'atol': 1e-5, 'rtol': 1e-5}
+        self.assertTrue(compare_gold(replay, metrics, old, trace, positions, cfg)['matches'])
+        searched = {'inputs_embeds': trace.clone(), 'generated_token_ids': [[7]]}
+        searched['inputs_embeds'][0, 2, 0] = 1e-4
+        result = compare_gold(searched, metrics, old, trace, positions, cfg)
+        self.assertFalse(result['matches'])
+        self.assertTrue(result['tokens_equal'] and result['teacher_nll']['close'])
+        self.assertEqual(result['latents']['failed_elements'], 1)
+        self.assertFalse(compare_gold(replay, {'teacher_nll': 0.1}, old, trace, positions, cfg)['matches'])
+        self.assertFalse(compare_gold({**replay, 'generated_token_ids': [[8]]}, metrics, old, trace, positions, cfg)['matches'])
+        previous = {'best_iteration': 0, 'history': [{'iteration': 0, 'teacher_nll': 0.01, 'relative_norm': 0.1}]}
+        current = {'best_iteration': 0, 'history': [{'iteration': 0, 'teacher_nll': 0.01000001, 'relative_norm': 0.1}]}
+        self.assertEqual(compare_search_history(current, previous)['first_exact_difference']['iteration'], 0)
 
     def test_cli_reproduces_gold_and_reuses_search_budget_for_wrong_targets(self):
         torch.set_num_threads(1)
@@ -72,6 +92,7 @@ class TargetAnswerControlTests(unittest.TestCase):
             model.base_model.requires_grad_(False)
             parent = root / 'outputs/oracle'
             (parent / 'traces').mkdir(parents=True)
+            (parent / 'optimization').mkdir()
             family = [{'question': f'flock is {n} chickens', 'answer': f'#### {3*n-40}',
                        'chicken_count': n, 'is_calibration': n == 20} for n in (20, 18)]
             (parent / 'family.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in family))
@@ -98,6 +119,8 @@ class TargetAnswerControlTests(unittest.TestCase):
                 for seed in search['restart_seeds']:
                     delta, log = projected_search(model, state, h, ids, 0.1, seed, search)
                     gold_histories[(sample['sample_id'], seed)] = log['history']
+                    log_path = f"optimization/{sample['index']}_{seed}.json"
+                    write_json(parent / log_path, log)
                     with torch.no_grad():
                         output = model.rollout_from_step(h + delta, state)
                         loss = teacher_forward(model, state, h + delta, ids)[0]
@@ -106,6 +129,7 @@ class TargetAnswerControlTests(unittest.TestCase):
                     torch.save({'latent_inputs': output['inputs_embeds'][:, positions]}, parent / path)
                     prior.append({'sample_id': sample['sample_id'], 'operation': 'optimized', 'strength': 0.1,
                         'restart_seed': seed, 'teacher_nll': float(loss), 'trace_path': path,
+                        'optimization_log': log_path,
                         'generated_token_ids': output['generated_token_ids'][0]})
             (parent / 'predictions.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in prior))
             packages = {name: importlib.metadata.version(name) for name in ('torch', 'transformers', 'numpy', 'huggingface_hub')}
@@ -127,7 +151,9 @@ class TargetAnswerControlTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             output = root / 'outputs/controls'
             manifest = json.loads((output / 'manifest.json').read_text())
-            self.assertEqual((manifest['status'], manifest['record_count'], manifest['gold_parent_reproduced']), ('completed', 16, 4))
+            self.assertEqual((manifest['status'], manifest['record_count'], manifest['gold_parent_replay_passed']), ('completed', 16, 4))
+            self.assertEqual(manifest['gold_search_matches_parent'], 4)
+            self.assertEqual(manifest['gold_search_differences'], 0)
             self.assertTrue(manifest['weights_unchanged'])
             self.assertEqual(json.loads((output / 'search_protocol.json').read_text()), search)
             rows = [json.loads(line) for line in (output / 'predictions.jsonl').read_text().splitlines()]
@@ -145,6 +171,11 @@ class TargetAnswerControlTests(unittest.TestCase):
                 self.assertLessEqual(row['relative_edit_norm'], 0.10001)
                 self.assertEqual(len(row['target_token_ids']), row['target_token_count'])
                 if row['target_kind'] == 'gold':
+                    self.assertTrue(row['gold_parent_replay_passed'] and row['gold_search_matches_parent'])
+                    diagnostic = json.loads((output / row['gold_parent_comparison_path']).read_text())
+                    self.assertTrue(diagnostic['fixed_input_replay']['matches'])
+                    self.assertTrue(diagnostic['independent_search']['matches'])
+                    self.assertIsNone(diagnostic['search_history']['first_exact_difference'])
                     self.assertEqual(log['history'], gold_histories[(row['sample_id'], row['restart_seed'])])
                     self.assertEqual(row['target_hit'], row['correct'])
                 elif row['sample_id'] == samples[0]['sample_id']:
@@ -155,6 +186,60 @@ class TargetAnswerControlTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             for name, checksum in json.loads((output / 'checksums.json').read_text()).items():
                 self.assertEqual(digest(output / name), checksum)
+            # A different valid parent input must replay strictly, while the fresh
+            # search remains an independently scored candidate, without filtering.
+            changed_row = next(r for r in prior if r['operation'] == 'optimized')
+            original_row = changed_row.copy()
+            trace_file = parent / changed_row['trace_path']
+            original_bytes = trace_file.read_bytes()
+            sample = samples[0]
+            with torch.no_grad():
+                h, state = model.forward_until_step(sample['question'] + '\n', 2)
+                old_trace = torch.load(trace_file, weights_only=True)['latent_inputs']
+                modified = h + 0.8 * (old_trace[:, 1] - h)
+                replay = model.rollout_from_step(modified, state)
+                ids = torch.tensor([model.tokenizer('### ' + sample['gold_answer'])['input_ids'] + [model.eos_token_id]])
+                changed_row['teacher_nll'] = float(teacher_forward(model, state, modified, ids)[0])
+                changed_row['generated_token_ids'] = replay['generated_token_ids'][0]
+                torch.save({'latent_inputs': replay['inputs_embeds'][:, state['latent_lists'][0]]}, trace_file)
+            (parent / 'predictions.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in prior))
+            checksums = json.loads((parent / 'checksums.json').read_text())
+            for name in ('predictions.jsonl', changed_row['trace_path']):
+                checksums[name] = digest(parent / name)
+            write_json(parent / 'checksums.json', checksums)
+            result = subprocess.run([sys.executable, str(ROOT / 'run_target_answer_controls.py'), '--config', str(config),
+                '--machine-config', str(machine), '--oracle-run', str(parent), '--run-id', 'search-drift'],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            drift = root / 'outputs/search-drift'
+            drift_manifest = json.loads((drift / 'manifest.json').read_text())
+            self.assertEqual((drift_manifest['record_count'], drift_manifest['gold_parent_replay_passed'],
+                              drift_manifest['gold_search_differences']), (16, 4, 1))
+            drift_rows = [json.loads(line) for line in (drift / 'predictions.jsonl').read_text().splitlines()]
+            compared = next(r for r in drift_rows if r.get('gold_search_matches_parent') is False)
+            self.assertTrue(compared['gold_parent_replay_passed'])
+            self.assertEqual(compared['predicted_answer'], '20')
+            self.assertTrue((drift / compared['gold_parent_comparison_path'].replace('.json', '.pt')).is_file())
+            changed_row.update(original_row)
+            trace_file.write_bytes(original_bytes)
+            # Corrupt a parent scalar and update its checksum: a genuine replay
+            # discrepancy must still stop, rather than being classified as search drift.
+            next(r for r in prior if r['operation'] == 'optimized')['teacher_nll'] += 0.1
+            (parent / 'predictions.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in prior))
+            checksums = json.loads((parent / 'checksums.json').read_text())
+            checksums['predictions.jsonl'] = digest(parent / 'predictions.jsonl')
+            checksums[changed_row['trace_path']] = digest(trace_file)
+            write_json(parent / 'checksums.json', checksums)
+            result = subprocess.run([sys.executable, str(ROOT / 'run_target_answer_controls.py'), '--config', str(config),
+                '--machine-config', str(machine), '--oracle-run', str(parent), '--run-id', 'bad-replay'],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            failed = root / 'outputs/bad-replay'
+            diagnostic = json.loads((failed / 'logs/gold_replay_mismatch.json').read_text())
+            self.assertTrue(diagnostic['fixed_input_replay']['tokens_equal'])
+            self.assertFalse(diagnostic['fixed_input_replay']['teacher_nll']['close'])
+            self.assertTrue((failed / 'logs/gold_replay_mismatch.pt').is_file())
+            self.assertEqual(json.loads((failed / 'manifest.json').read_text())['status'], 'failed')
 
 
 if __name__ == '__main__':

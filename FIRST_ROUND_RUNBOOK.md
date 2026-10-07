@@ -246,10 +246,14 @@ python run_target_answer_controls.py \
 
 本轮只评估优化候选，不重复反向与随机方向分支；主要比较三个目标的可达性，预算在三个目标间一致。8 题 × 3 目标 × 4 半径 × 3 初始化 = **288 次优化**，每次保存 81 个迭代损失。每题另存 baseline 和 identity，合计 **304 条自由生成记录**。
 
-重新运行的 96 个 gold 候选必须复现 `pilot02` 的生成 token IDs、完整 latent 输入（原数值阈值）及选定目标 NLL（误差最多 `1e-4`）；baseline 和 identity 也须复现。候选插入、前缀保持、缓存隔离、范数投影及 teacher/cache 一致性继续严格检查。最后校验权重值及梯度未变。任一异常停止并保存失败目录，原输出不被覆盖。
+先分别回放 `pilot02` 保存的 96 个 gold 输入，必须复现其生成 token IDs、完整 latent 输入（原数值阈值）及目标 NLL（误差最多 `1e-4`）；baseline 和 identity 也须复现。重新优化得到的 gold 向量是本轮独立搜索的结果，与旧向量的差异另行记录，不替换成旧候选，也不据此筛除本轮结果。三个目标仍使用相同算法、目标函数形式和更新预算。候选插入、前缀保持、缓存隔离、范数投影及 teacher/cache 一致性继续严格检查。最后校验权重值及梯度未变。推理回放或这些检查异常则停止并保存失败目录，原输出不被覆盖。
+
+初版把“重新优化得到相同向量”和“同一向量复现推理”合并成了停止门槛。修订版分开这两个检查，未放宽任何原数值阈值，也未改优化器、随机种子、迭代选择或成功判据。跨运行搜索结果可能不同，具体原因不能仅凭旧报错判定。每个 gold 条件在 `logs/gold_reproduction/` 保存两种比较：token IDs、分位置向量差值、NLL 差值、最佳迭代以及优化历史首次逐值差异。独立搜索不匹配时另存 `.pt` 张量，汇总为 `gold_search_differences`；真实固定输入回放失败则保存 `logs/gold_replay_mismatch.json` 和 `.pt` 并停止。
 
 每个目标保存实际文本、token IDs、长度及原始输入下的 NLL 到 `optimization/<index>_targets.json`。记录 `target_answer`、`target_offset`、`target_hit` 和 `correct`：`target_hit` 表示自由生成命中所指定的优化目标；`correct` 始终表示命中真实 gold。成功生成错误目标不算修复。`summary.json` 按题、目标和半径分别统计两种结果，并记录最小已测试成功半径；并非真实最小编辑范数。原题与 7 个相关变体分开解释。
 
 回传完整 `outputs/gsm8k_target_answer_controls_pilot01/`，包含全部 `optimization/` 和 `traces/`。若发生 teacher/cache 不匹配，诊断文件继续保存至 `logs/teacher_mismatch.json` 与 `.pt`。目标数值和分词长度可能影响可达难度；两个错误目标的结果不能代表所有错误答案。
+
+初版失败目录保留；修订版使用新的 run-id `gsm8k_target_answer_controls_pilot02` 重跑。生成记录仍为 304 条，额外的 96 次固定输入回放只作一致性核验，不纳入目标命中统计。
 
 若两个错误目标也在相近半径和预算下普遍可达，当前优化成功不足以证明推理修复；若 gold 更容易达到，也只支持当前题族和目标集合下的相对可达性。此对照本身不定位原错误，不识别中间语义因素。CPU `python -m unittest test_target_answer_controls -v` 检查完整导出、旧 gold 搜索复现、协议继承、目标/真实正确性分离、缓存一致性及离线重评分。

@@ -67,6 +67,34 @@ def target_summary(records):
     return questions
 
 
+def compare_gold(output, metrics, old, old_trace, positions, cfg):
+    """Compare fixed-input inference or independent searches without conflating them."""
+    import math
+    latents = comparison_details(output['inputs_embeds'][:, positions], old_trace, cfg)
+    current, expected = metrics['teacher_nll'], old['teacher_nll']
+    finite = math.isfinite(current) and math.isfinite(expected)
+    nll = {'actual': current, 'expected': expected, 'atol': 1e-4, 'finite': finite,
+           'abs_error': abs(current-expected) if finite else None,
+           'close': finite and abs(current-expected) <= 1e-4}
+    tokens_equal = output['generated_token_ids'][0] == old['generated_token_ids']
+    return {'matches': bool(tokens_equal and latents['close'] and nll['close']),
+            'tokens_equal': tokens_equal, 'actual_token_ids': output['generated_token_ids'][0],
+            'expected_token_ids': old['generated_token_ids'], 'latents': latents, 'teacher_nll': nll}
+
+
+def compare_search_history(current, previous):
+    """Record exact numerical divergence; this does not select or reject candidates."""
+    fields = ('teacher_nll', 'relative_norm', 'gradient_norm')
+    first = None
+    for now, old in zip(current['history'], previous['history']):
+        if any(now.get(key) != old.get(key) for key in fields):
+            first = {'iteration': now['iteration'], 'actual': now, 'expected': old}
+            break
+    return {'actual_best_iteration': current['best_iteration'], 'expected_best_iteration': previous['best_iteration'],
+            'actual_evaluations': len(current['history']), 'expected_evaluations': len(previous['history']),
+            'first_exact_difference': first}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True)
@@ -123,7 +151,7 @@ def main():
         raise ValueError('run-id must be a directory name')
     folder = Path(cfg['output_root']) / args.run_id
     folder.mkdir(parents=True, exist_ok=False)
-    for name in ('traces', 'optimization', 'logs'):
+    for name in ('traces', 'optimization', 'logs', 'logs/gold_reproduction'):
         (folder / name).mkdir()
     shutil.copy2(parent_dir / 'family.jsonl', folder / 'family.jsonl')
     cfg['dataset_path'] = str(folder / 'family.jsonl')
@@ -147,9 +175,10 @@ def main():
         'record_count': 0, 'expected_records': expected, 'oracle_run_id': parent['run_id'], 'command': sys.argv,
         'started_utc': datetime.now(timezone.utc).isoformat(),
         'interpretation': 'Equal-budget target reachability; target_hit is distinct from true-gold correctness.',
+        'reproduction_gate': 'Fixed parent inputs must reproduce inference at original tolerances; independent search differences are recorded, not filtered.',
         'branches': 'Baseline, identity, and optimized gold/minus4/plus4; no reverse or random branches.'}
     write_json(folder / 'manifest.json', manifest)
-    records, error, reproduced = [], None, 0
+    records, error, replay_passed, search_matched = [], None, 0, 0
     print(f'RUN_DIR={folder}', flush=True)
     try:
         model = CoconutWrapper()
@@ -231,6 +260,29 @@ def main():
                         emit('identity', identity, h, **original_metrics, passed=True)
                     for radius in search['relative_radii']:
                         for seed in search['restart_seeds']:
+                            reproduction = None
+                            if case['target_offset'] == 0:
+                                old = old_gold[(sid, radius, seed)]
+                                old_trace = torch.load(parent_dir / old['trace_path'], weights_only=True, map_location=model.device)['latent_inputs']
+                                if old_trace.shape != base.shape or not torch.isfinite(old_trace).all():
+                                    raise ValueError('Invalid parent latent trace')
+                                old_input = old_trace[:, search['target_step']-1].clone()
+                                with torch.no_grad():
+                                    replay = model.rollout_from_step(old_input, state)
+                                    check_trace(torch, replay, positions, base, search['target_step'], old_input, cfg)
+                                    replay_metrics = check_teacher(old_input, replay, ids, operation='gold_parent_replay', radius=radius, restart_seed=seed)
+                                replay_check = compare_gold(replay, replay_metrics, old, old_trace, positions, cfg)
+                                reproduction_path = f"logs/gold_reproduction/{sample['index']:03d}_r{radius}_seed{seed}.json"
+                                reproduction = {'sample_id': sid, 'radius': radius, 'restart_seed': seed,
+                                                'parent_trace_path': old['trace_path'], 'fixed_input_replay': replay_check}
+                                write_json(folder / reproduction_path, reproduction)
+                                if not replay_check['matches']:
+                                    write_json(folder / 'logs/gold_replay_mismatch.json', reproduction)
+                                    torch.save({'parent_latents': old_trace.cpu(), 'replay_latents': replay['inputs_embeds'][:, positions].detach().cpu()},
+                                               folder / 'logs/gold_replay_mismatch.pt')
+                                    raise ValueError('Fixed gold input replay differs from parent: ' + json.dumps(reproduction, allow_nan=False))
+                                replay_passed += 1
+                                check_state(model, state, snapshot)
                             delta, log = projected_search(model, state, h, ids, radius, seed, search)
                             log_path = f"optimization/{sample['index']:03d}_{case['target_kind']}_r{radius}_seed{seed}.json"
                             write_json(folder / log_path, {**case, **log})
@@ -244,14 +296,19 @@ def main():
                                 raise ValueError('Evaluated edit exceeded radius')
                             fields = {}
                             if case['target_offset'] == 0:
-                                old = old_gold[(sid, radius, seed)]
-                                old_trace = torch.load(parent_dir / old['trace_path'], weights_only=True, map_location=model.device)['latent_inputs']
-                                if (output['generated_token_ids'][0] != old['generated_token_ids']
-                                        or not torch.allclose(output['inputs_embeds'][:, positions], old_trace, atol=cfg['atol'], rtol=cfg['rtol'])
-                                        or abs(metrics['teacher_nll']-old['teacher_nll']) > 1e-4):
-                                    raise ValueError(f'Gold branch differs from oracle parent: {sid}, {radius}, {seed}')
-                                fields['gold_parent_reproduced'] = True
-                                reproduced += 1
+                                comparison = compare_gold(output, metrics, old, old_trace, positions, cfg)
+                                reproduction['independent_search'] = comparison
+                                previous_log = json.loads((parent_dir / old['optimization_log']).read_text())
+                                reproduction['search_history'] = compare_search_history(log, previous_log)
+                                write_json(folder / reproduction_path, reproduction)
+                                if not comparison['matches']:
+                                    tensor_path = reproduction_path.replace('.json', '.pt')
+                                    torch.save({'parent_latents': old_trace.cpu(), 'searched_latents': output['inputs_embeds'][:, positions].detach().cpu(),
+                                                'searched_delta': delta.detach().cpu()}, folder / tensor_path)
+                                    print('GOLD_SEARCH_DIFFERENCE=' + reproduction_path, flush=True)
+                                search_matched += comparison['matches']
+                                fields.update(gold_parent_replay_passed=True, gold_search_matches_parent=comparison['matches'],
+                                              gold_parent_comparison_path=reproduction_path)
                             emit('optimized_' + case['target_kind'], output, inserted, radius, seed, case,
                                 **metrics, **fields, original_teacher_nll=original_metrics['teacher_nll'],
                                 target_text=text, target_token_ids=ids[0].tolist(), target_token_count=ids.shape[1], optimization_log=log_path)
@@ -263,11 +320,12 @@ def main():
                     check_state(model, state, snapshot)
                     if replay['generated_token_ids'][0] != baseline['generated_token_ids'][0]:
                         raise ValueError('Identity drift after target search')
-        if len(records) != expected or reproduced != len(expected_gold) or any(
+        if len(records) != expected or replay_passed != len(expected_gold) or any(
                 p.grad is not None or p.requires_grad or delta_hash(p) != weight_checksums[name]
                 for name, p in model.base_model.named_parameters()):
             raise ValueError('Incomplete coverage, reproduction, or changed model weights')
-        manifest.update(status='completed', weights_unchanged=True, gold_parent_reproduced=reproduced)
+        manifest.update(status='completed', weights_unchanged=True, gold_parent_replay_passed=replay_passed,
+                        gold_search_matches_parent=search_matched, gold_search_differences=replay_passed-search_matched)
     except BaseException:
         error = traceback.format_exc()
         (folder / 'logs/error.log').write_text(error)
@@ -278,7 +336,9 @@ def main():
         write_json(folder / 'manifest.json', manifest)
         write_json(folder / 'summary.json', {'status': manifest['status'], 'record_count': len(records),
             'expected_records': expected, 'uncompleted_records': expected-len(records), 'run_error': error,
-            'gold_parent_reproduced': reproduced, 'per_question': target_summary(records),
+            'gold_parent_replay_passed': replay_passed, 'gold_search_matches_parent': search_matched,
+            'gold_search_differences': sum(r.get('gold_search_matches_parent') is False for r in records),
+            'per_question': target_summary(records),
             'note': 'Compare free-generation target hits under identical search budgets; correct always means true gold.'})
         write_json(folder / 'checksums.json', {str(p.relative_to(folder)): digest(p) for p in sorted(folder.rglob('*'))
                                              if p.is_file() and p.name != 'checksums.json'})
