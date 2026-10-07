@@ -1,0 +1,12 @@
+{
+  "target_step": 5,
+  "relative_radii": [0.1, 0.25, 0.5, 1.0],
+  "restart_seeds": [0, 1, 2],
+  "updates": 80,
+  "step_fraction_of_radius": 0.05,
+  "initial_fraction_of_radius": 0.1,
+  "random_control_seeds": [3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009],
+  "target_template": "### {answer}",
+  "append_eos": true,
+  "objective": "Mean teacher-forced token NLL; choose minimum-NLL iterate; verify by independent free generation."
+}

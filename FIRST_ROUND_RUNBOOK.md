@@ -199,3 +199,28 @@ python run_same_question_donors.py \
 若新变体中同题 donor 成功而原题固定方向失败，支持该题在第 5 步存在局部修复，同时显示共享固定方向的限制。若没有成功，只说明此次候选生成方式与预算未找到修复，不能否定其他状态、位置或编辑方式。成功仍属于使用 gold 判定后的 oracle 可行性证据，尚不能定位错误起源或识别具体语义因素。
 
 本地验证：`python -m unittest test_same_question_donors -v`，检查搜索预算、等范数对照、原始前缀与自然反馈、缓存隔离，以及包含失败来源的端到端导出和离线评分。
+
+## 13. 受范数约束的 oracle 单向量优化
+
+同题 donor 搜索在 7 个新变体上未找到成功，来源轨迹也全部回答错误。下一轮直接用正确答案损失寻找第 5 步输入，检验限定幅度内的可修复性。正确答案只用于优化和离线评分；成功仍由不提供答案的自由生成判断。
+
+```bash
+git pull --ff-only
+python run_oracle_latent_optimization.py \
+  --config configs/first_round/gsm8k.json \
+  --machine-config configs/first_round/server.json \
+  --family-run /data2/lsy/projects/Edit-Latent-CoT/outputs/gsm8k_counterfactual_family_pilot01 \
+  --run-id gsm8k_oracle_latent_optimization_pilot01
+```
+
+冻结模型参数及第 5 步之前的输入。令修改为 `h5 + ||h5|| * u`，约束 `||u|| <= radius`。相对半径预先固定为 0.1、0.25、0.5、1.0；每个半径使用种子 0、1、2，各执行 80 次更新。种子 0 从零位移开始，其他初始化为半径的 10% 的随机位移。使用归一化梯度下降，每步长度为半径的 5%，更新后投影回约束球。
+
+目标是 `### {gold_answer}` 加 EOS 的平均 token NLL，采用 teacher forcing；所有后续 latent 输入自然重算并保留梯度。每次运行保存 81 个迭代的损失、位移范数和梯度范数，选取最低 NLL 的迭代。最终分支另存每个目标 token 的 NLL，便于区分数字答案、格式和 EOS 的变化。不会按生成正确性挑选迭代，也不会答对后提前停止或调整协议。
+
+现有恢复接口生成后续反馈时会 detach；新的梯度入口独立重算完整上下文，保留反馈链的梯度。原接口和旧实验签名不变。优化前及最终评估时，核对梯度入口与现有缓存接口的反馈向量、teacher-forcing logits 一致；自由生成始终使用原接口。该检查失败则停止。
+
+每个优化候选再评估反向位移及种子 3000–3009 的 10 个等位移范数随机方向；所有分支只修改第 5 步、保持原始前缀并自然重算后续反馈。每题另保存基线、identity 和上一轮固定方向复现。8 题 ×（3 + 4 半径 × 3 初始化 × 12 分支）= **1,176 条生成记录**，另保存 96 次优化的完整历史和向量轨迹。
+
+运行结束检查参数值和梯度、前缀与缓存均未改变。回传完整 `outputs/gsm8k_oracle_latent_optimization_pilot01/`，包含 `optimization/`；按题目、半径和初始化报告自由生成成功率与损失变化，原题和新变体分开。随机对照匹配位移范数，计算搜索预算与梯度优化不同，不能据此宣称算法性能公平优于随机搜索。
+
+若成功，仅说明在该位置和幅度内找到能使答案正确的输入，尚不能证明修复了语义因素或定位了错误起源。若失败，只说明当前目标、优化器和预算未找到修复，不能证明不存在可修复状态。本地 `python -m unittest test_oracle_latent_optimization -v` 验证有限差分梯度、后续反馈梯度、投影约束、缓存/权重保持，以及自由生成与 teacher forcing 的分离。
