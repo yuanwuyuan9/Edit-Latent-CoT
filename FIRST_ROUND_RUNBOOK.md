@@ -131,3 +131,24 @@ python run_path_controls.py \
 该实验使用已观察到的轨迹，是 oracle 机制诊断。比较两种混合轨迹能检查后续反馈向量的作用，但不直接证明语义修复，也不表示冻结输入向量后剩余 Transformer 计算没有变化。
 
 本地验证：`python -m unittest test_path_controls -v`，包含输入组合、全上下文回放、异常输入检查及微型模型端到端导出与评分。
+
+## 10. 单个后续向量移植，恢复自然反馈
+
+前面的混合轨迹对照固定了所有 latent 输入。要检查一个后续向量能否单独传递有用的信息，可把来源轨迹在后续位置的一个向量移植到原始问题的原始前缀，再让 Coconut 自主计算剩余反馈与答案。
+
+```bash
+git pull --ff-only
+python run_path_controls.py \
+  --mode transplant \
+  --config configs/first_round/gsm8k_followup.local.json \
+  --machine-config configs/first_round/server.json \
+  --input-run /data2/lsy/projects/Edit-Latent-CoT/outputs/gsm8k_interventions_followup01 \
+  --sample-index 4 \
+  --run-id gsm8k_latent_transplants_pilot01
+```
+
+仍使用第 1–3 步、强度至少 0.5 的 90 个来源条件，包含 22 个成功来源及 68 个失败来源。逐一尝试来源修改位置之后的每个 latent 位置：第 1 步来源有 5 个目标位置，第 2 步有 4 个，第 3 步有 3 个，共 360 条移植记录。90 个来源条件不是独立题目。
+
+移植前复现来源的自然轨迹；每个目标位置先检查 identity 能复现基线。之后只插入一个来源向量，使用原始前缀与缓存，重新计算全部后续反馈向量。记录来源步骤、目标步骤、来源正确性、实际移植幅度、答案及完整输出轨迹。检查原始前缀未变且目标位置恰好插入指定向量；异常立即停止。
+
+这是同题、oracle 来源的机制诊断。若成功，只支持该后续反馈向量在指定原始前缀下提供了足以改变答案的信息；其语义内容、迁移性和错误起源仍需其他证据。失败来源作为对照，不能仅比较成功来源的最佳结果。

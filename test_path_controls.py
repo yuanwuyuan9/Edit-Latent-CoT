@@ -12,7 +12,7 @@ from transformers import GPT2Config, GPT2LMHeadModel, GPT2Tokenizer
 from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode
 
 from experiments.first_round.test_tiny_model import tiny_model
-from run_path_controls import crossed_latents, decode_fixed_latents
+from run_path_controls import crossed_latents, decode_fixed_latents, transplant_latent
 
 ROOT = Path(__file__).resolve().parent
 
@@ -66,6 +66,29 @@ class PathControlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             crossed_latents(torch.zeros(1, 3, 16), torch.zeros(1, 3, 16), 0)
 
+    @torch.no_grad()
+    def test_transplant_preserves_original_prefix_and_recomputes_future(self):
+        model = tiny_model()
+        prompt = "Hi\n"
+        tokens = model._prepare_inputs(prompt)
+        positions = (tokens["input_ids"][0] == model.latent_token_id).nonzero().flatten()
+        baseline = model.run_baseline(prompt)
+        base = baseline["inputs_embeds"][:, positions].clone()
+        h, state = model.forward_until_step(prompt, 1)
+        source = model.rollout_from_step(torch.zeros_like(h), state)
+        saved = source["inputs_embeds"][:, positions].clone()
+        donor = saved[:, 1].clone()
+        result = transplant_latent(model, prompt, donor, 2, baseline["generated_token_ids"][0])
+        actual = result["inputs_embeds"][:, positions]
+        torch.testing.assert_close(actual[:, :1], base[:, :1])
+        torch.testing.assert_close(actual[:, 1], donor)
+        _, fresh_state = model.forward_until_step(prompt, 2)
+        reference = model.rollout_from_step(donor, fresh_state)
+        torch.testing.assert_close(actual, reference["inputs_embeds"][:, positions])
+        self.assertEqual(result["generated_token_ids"], reference["generated_token_ids"])
+        # Recomputed future differs from simply copying the source suffix.
+        self.assertGreater(float((actual[:, 2:] - saved[:, 2:]).norm()), 0)
+
     def test_cli_export_and_rescoring_with_real_saved_tiny_trajectories(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -113,6 +136,16 @@ class PathControlTests(unittest.TestCase):
             self.assertEqual(summary["source_conditions"], 3)
             result = subprocess.run([sys.executable, str(ROOT / "analyze_first_round.py"), "--run-dir", str(output),
                                      "--output-dir", str(root / "analysis")], cwd=ROOT, env=env,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            execute("run_path_controls.py", "--run-id", "transplants", "--input-run", str(source),
+                    "--sample-index", "0", "--mode", "transplant")
+            transplant_output = root / "outputs/transplants"
+            transplant_summary = json.loads((transplant_output / "summary.json").read_text())
+            self.assertEqual(transplant_summary["status"], "completed")
+            self.assertEqual(transplant_summary["record_count"], 3)
+            result = subprocess.run([sys.executable, str(ROOT / "analyze_first_round.py"), "--run-dir", str(transplant_output),
+                                     "--output-dir", str(root / "transplant-analysis")], cwd=ROOT, env=env,
                                     capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             original = [json.loads(s) for s in (source / "predictions.jsonl").read_text().splitlines()]
