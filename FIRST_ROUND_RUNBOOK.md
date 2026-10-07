@@ -258,4 +258,31 @@ python run_target_answer_controls.py \
 
 `pilot02` 已完成并通过离线核验。半径 0.5 下，gold、`y-4`、`y+4` 均命中 24/24 次；96 次固定旧向量回放完全复现。重新搜索的 48 次向量不匹配集中在半径 0.5 和 1.0，输出 token 全部保持一致。结果及固定编辑的后果计算对照设计见 [指定目标对照分析](docs/TARGET_ANSWER_CONTROLS_PILOT02.md)。
 
+## 15. 冻结编辑，改变下午喂食量
+
+三个指定目标都可达到后，下一轮检验固定编辑的输出能否随新条件变化。从 `target_answer_controls_pilot02` 的原题中取半径 0.25、种子 0 的三个编辑，来源目标分别为 20、16、24。协议固定父实验签名及三个来源轨迹的 SHA256，禁止换候选或在变体上重新优化。
+
+```bash
+git pull --ff-only
+python run_frozen_consequences.py \
+  --config configs/first_round/gsm8k.json \
+  --machine-config configs/first_round/server.json \
+  --target-run /data2/lsy/projects/Edit-Latent-CoT/outputs/gsm8k_target_answer_controls_pilot02 \
+  --run-id gsm8k_frozen_consequences_pilot01
+```
+
+程序仅替换原题中 `another 25 cups of feed` 的数字。鸡数量 20、每只需求 3、上午用量 15 保持原题文字；下午用量先取 25 复现，再测试 17、21、29、33。正确答案分别为 20、28、24、16、12。这些是同一道题的受控变体，不是新增独立 benchmark 题目。
+
+每个来源固定 `delta = source_h5 - source_baseline_h5`；在各新题自己的 `h5` 上加同一绝对 delta，保留该题原始前缀并自然重算第 6 步与答案。不同新题的相对编辑幅度可能变化，程序记录实际绝对和相对范数；不会按新题状态重新缩放。整个运行只有无梯度推理和离线评分，不调用优化器或 teacher forcing。
+
+每题评估 baseline、identity，以及三个来源各自的正向 delta、反向 delta、10 个等绝对范数随机方向。随机种子固定为 4000–4009，方向在所有变体中保持相同，三个来源也共享这些种子以便配对；这些记录不是独立样本。5 题 ×（2 + 3 × 12）= **190 条生成记录**。
+
+下午 25 的校准题必须先复现 baseline 和三个来源编辑的生成 token IDs、完整反馈输入（沿用原阈值）及数值答案。每题均核对独立官方前向、identity、插入向量、原始前缀及缓存隔离。最终检查权重值及梯度不变；任一异常停止，保留失败目录。
+
+每条编辑分支独立记录三种结果：`correct` 始终对比新题真实 gold；`condition_adapted_hit` 对比 `source_answer - (afternoon_cups - 25)`；`source_answer_repeated` 检查是否重复来源目标。后两个条件对非校准变体互斥。例如下午改为 29 时，来源 20、16、24 的适配预测是 16、12、20，恒定预测仍为 20、16、24。反向与随机对照也对比对应正向来源的预测，不能将它们的匹配解释为已定义的反向语义。
+
+`summary.json` 按来源方向、分支、随机种子分别报告校准题和 4 个新变体的真实正确性、条件适配次数、来源答案重复次数及全部答案。随机分支按种子分开保存，以便同时统计全部对照。条件适配成功属于行为组合性的证据，尚不能直接识别中间语义因素；失败仅约束这三个冻结方向。
+
+回传完整 `outputs/gsm8k_frozen_consequences_pilot01/`，包括 `frozen_edits.pt`、`frozen_sources.json`、数据、协议、全部轨迹和代码快照。CPU `python -m unittest test_frozen_consequences -v` 检查唯一题目因素变化、固定绝对范数、自然反馈、来源校验、三种判据分离及完整导出/离线评分。端到端测试使用受控数值解码器和真实微型 GPT-2 反馈/缓存，用于流程检查，不代表真实 checkpoint 的效果。
+
 若两个错误目标也在相近半径和预算下普遍可达，当前优化成功不足以证明推理修复；若 gold 更容易达到，也只支持当前题族和目标集合下的相对可达性。此对照本身不定位原错误，不识别中间语义因素。CPU `python -m unittest test_target_answer_controls -v` 检查完整导出、旧 gold 搜索复现、协议继承、目标/真实正确性分离、缓存一致性及离线重评分。

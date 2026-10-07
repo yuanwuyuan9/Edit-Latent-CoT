@@ -1,0 +1,14 @@
+{
+  "source_chicken_count": 20,
+  "source_radius": 0.25,
+  "source_restart_seed": 0,
+  "target_step": 5,
+  "afternoon_cups": [25, 17, 21, 29, 33],
+  "random_seeds": [4000, 4001, 4002, 4003, 4004, 4005, 4006, 4007, 4008, 4009],
+  "source_signature": "acc8d61245d37a0c38896057c7da88fa5402159c6d520129e585f16d8aae0edc",
+  "source_trace_hashes": {
+    "gold": "27a9c6196d95f58010bf2827803d790d01a7ae3b18ec6938dca8297f6083cb96",
+    "minus4": "5d01f29416bf419e90b4e5d9b3606fd5abea94de0d8f7fa8cccd700b988c7f33",
+    "plus4": "d557a18c5920e73c603f59692bbec3677c1fd70d47021b3eac7a48cacce91a64"
+  }
+}
