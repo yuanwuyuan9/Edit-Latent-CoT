@@ -107,3 +107,27 @@ python3 -m unittest experiments.first_round.test_data -v
 第二组使用随机初始化的微型 GPT-2，在 CPU 上检查计算与状态处理，不下载 checkpoint，不代表真实模型的正确率或修复效果。
 
 GitHub Actions 使用 CPU 运行相同检查。实际数据未下载时，仅跳过真实数据集检查，数据适配仍通过独立小样本验证。克隆后也可以在已安装依赖的环境中直接使用 `python -m unittest ...`。
+
+## 9. 成功案例的后续反馈对照
+
+GSM8K 的 5 条 pilot 中，样本索引 4 的随机干预成功集中在第 1–3 步。后续扫描保存了所有样本的完整向量，可用于检查成功是否依赖后续反馈输入的变化。
+
+`run_path_controls.py` 从已完成的干预目录读取向量，在相同问题上交叉组合四种输入：原轨迹、完整修改轨迹、仅修改当前位置、仅保留修改后的后续向量。所有 latent 输入固定，Transformer 隐藏状态及答案生成重新计算；并不冻结 KV cache 或全部后续计算。
+
+```bash
+git pull --ff-only
+python run_path_controls.py \
+  --config configs/first_round/gsm8k_followup.local.json \
+  --machine-config configs/first_round/server.json \
+  --input-run /data2/lsy/projects/Edit-Latent-CoT/outputs/gsm8k_interventions_followup01 \
+  --sample-index 4 \
+  --run-id gsm8k_path_controls_pilot01
+```
+
+默认选择第 1–3 步、强度至少 0.5 的所有随机条件，包含成功及失败对照：90 个来源条件 × 4 个分支 = 360 条记录。运行要求当前代码、权重、数据和环境与来源目录的第一轮签名一致。新入口及其测试单独保存源码和校验值，不改变既有恢复接口。
+
+每个条件先验证原轨迹回放与基线一致、完整修改轨迹回放与该条件原始生成一致；任一不一致则停止，不能解释混合轨迹结果。输出目录可使用 `analyze_first_round.py` 校验与重新评分。
+
+该实验使用已观察到的轨迹，是 oracle 机制诊断。比较两种混合轨迹能检查后续反馈向量的作用，但不直接证明语义修复，也不表示冻结输入向量后剩余 Transformer 计算没有变化。
+
+本地验证：`python -m unittest test_path_controls -v`，包含输入组合、全上下文回放、异常输入检查及微型模型端到端导出与评分。
