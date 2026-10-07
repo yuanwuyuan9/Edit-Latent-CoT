@@ -226,3 +226,5 @@ python run_oracle_latent_optimization.py \
 运行结束检查参数值和梯度、前缀与缓存均未改变。回传完整 `outputs/gsm8k_oracle_latent_optimization_pilot01/`，包含 `optimization/`；按题目、半径和初始化报告自由生成成功率与损失变化，原题和新变体分开。随机对照匹配位移范数，计算搜索预算与梯度优化不同，不能据此宣称算法性能公平优于随机搜索。
 
 若成功，仅说明在该位置和幅度内找到能使答案正确的输入，尚不能证明修复了语义因素或定位了错误起源。若失败，只说明当前目标、优化器和预算未找到修复，不能证明不存在可修复状态。本地 `python -m unittest test_oracle_latent_optimization -v` 验证有限差分梯度、后续反馈梯度、投影约束、缓存/权重保持，以及自由生成与 teacher forcing 的分离。
+
+`pilot02` 已完成并通过离线核验。7 个新变体在相对半径 0.25 下有 6 个找到正确生成，在 0.5 下全部找到；这支持答案可达性，尚不能区分推理修复和答案引导。结果与下一轮指定错误答案对照的设计见 [pilot02 分析](docs/ORACLE_LATENT_OPTIMIZATION_PILOT02.md)。
